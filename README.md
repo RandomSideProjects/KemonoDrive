@@ -24,7 +24,7 @@
 
 ### Option 1: Run the Executable
 
-1. Download the latest release from the [Releases](https://github.com/alexspaces/KemonoDrive/releases) tab.
+1. Download the latest release from the [Releases](https://github.com/RandomSideProjects/KemonoDrive/releases) tab.
 2. Run the executable for MacOS:
   `KemonoDrive.app` (you might have to allow it in Settings -> Privacy & Security -> all the way down)
 
