@@ -15,6 +15,8 @@
 - 🌙 Dark mode with modern, clean UI
 - 📈 Shows download progress for each artist and file
 
+![preview image](
+
 ## Supported Platforms
 
 - [**Kemono**](https://kemono.su): Patreon, Fanbox, Subscribestar, Discord, Fantia, Afdian, Boosty, Gumroad, DLsite
