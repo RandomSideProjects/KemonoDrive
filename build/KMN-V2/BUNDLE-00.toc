@@ -1,0 +1,1 @@
+([('KMN-V2', '/Volumes/5tb/kemono test/dist/KMN-V2', 'EXECUTABLE')],)
