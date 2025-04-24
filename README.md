@@ -7,7 +7,7 @@
 
 ## Features
 
-- 🔍 Browse artists from [Kemono](https://kemono.su) or [Coomer](https://coomer.su) directly inside the app
+- ||🔍 Browse artists from [Kemono](https://kemono.su) or [Coomer](https://coomer.su) directly inside the app||
 - ✅ Search across all supported platforms (e.g. Patreon, OnlyFans, Fanbox, etc.)
 - ✅ Select artists via checkboxes and auto-generate download links
 - 💾 Downloads all content: images, videos, zips, and more
