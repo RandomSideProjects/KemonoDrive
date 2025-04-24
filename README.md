@@ -15,7 +15,8 @@
 - 🌙 Dark mode with modern, clean UI
 - 📈 Shows download progress for each artist and file
 
-![preview image](
+![preview image](https://files.catbox.moe/h776pu.png)
+![preview image](https://files.catbox.moe/geoajl.png)
 
 ## Supported Platforms
 
