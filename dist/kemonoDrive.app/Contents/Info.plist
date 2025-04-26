@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>kemonoDrive</string>
 	<key>CFBundleIconFile</key>
-	<string>generated-95606b9a56bdcbd8303429c098838024e912404b836f361a17fc3d692ae3a90e.icns</string>
+	<string>icon-windowed.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>kemonoDrive</string>
 	<key>CFBundleInfoDictionaryVersion</key>

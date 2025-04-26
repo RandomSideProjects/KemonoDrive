@@ -35,11 +35,10 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['Icon.ico'],
 )
 app = BUNDLE(
     exe,
     name='kemonoDrive.app',
-    icon='Icon.ico',
+    icon=None,
     bundle_identifier=None,
 )

@@ -10,11 +10,27 @@ import tkinter as tk
 import webbrowser
 import base64
 
+# PIL and cv2 for image/video preview
+from PIL import Image, ImageTk
+import io
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+
+# Worker settings constants
+DEFAULT_WORKERS = 5
+MIN_WORKERS = 1
+MAX_WORKERS = 100
+
 def sanitize_filename(name):
     return re.sub(r'[\\/*?:"<>|]', '_', name).strip()
 
 def get_file_type_folder(filename):
     ext = os.path.splitext(filename)[1].lower()
+    if ext == ".bin":
+        return None
     if ext in [".mp4", ".webm", ".mov", ".avi", ".mkv"]:
         return "Videos"
     elif ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]:
@@ -51,6 +67,9 @@ def download_file(url, save_dir, file_label, artist_bar, file_bar, log_box):
         file_name = os.path.basename(urlparse(url).path)
         file_label.set(f"Downloading: {file_name}")
         subfolder = get_file_type_folder(file_name)
+        if subfolder is None:
+            log_box.insert(tk.END, f"[SKIP] {file_name} (unsupported type)\n")
+            return
         target_folder = os.path.join(save_dir, subfolder)
         os.makedirs(target_folder, exist_ok=True)
         path = os.path.join(target_folder, file_name)
@@ -59,16 +78,21 @@ def download_file(url, save_dir, file_label, artist_bar, file_bar, log_box):
             log_box.insert(tk.END, f"[SKIP] {file_name}\n")
             return
 
-        r = requests.get(url, stream=True)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, stream=True, headers=headers)
         total = int(r.headers.get("content-length", 0))
         downloaded = 0
+
+        def update_progress(value):
+            file_bar["value"] = value
 
         with open(path, 'wb') as f:
             for chunk in r.iter_content(8192):
                 f.write(chunk)
                 downloaded += len(chunk)
                 if total:
-                    file_bar["value"] = int(downloaded * 100 / total)
+                    percent = int(downloaded * 100 / total)
+                    file_bar.after_idle(update_progress, percent)
 
         log_box.insert(tk.END, f"[OK] {file_name}\n")
         file_bar["value"] = 0
@@ -99,12 +123,24 @@ def start_gui():
     notebook = ttk.Notebook(root)
     notebook.pack(fill="both", expand=True)
 
+    # Settings Tab
+    settings_tab = ttk.Frame(notebook)
+    notebook.add(settings_tab, text="Settings")
+
+    # Worker settings variable (single value)
+    worker_count = tk.IntVar(value=DEFAULT_WORKERS)
+
+    ttk.Label(settings_tab, text="Number of Workers:").pack(anchor="w", padx=10, pady=(10, 0))
+    ttk.Spinbox(settings_tab, from_=MIN_WORKERS, to=MAX_WORKERS, textvariable=worker_count, width=5).pack(anchor="w", padx=10)
+
     dl_tab = ttk.Frame(notebook)
     notebook.add(dl_tab, text="Download")
 
     ttk.Label(dl_tab, text="Profile URLs (one per line):").pack(anchor="w", padx=10, pady=(10, 0))
     url_box = tk.Text(dl_tab, height=6, bg="#2e2e2e", fg="white", insertbackground="white")
     url_box.pack(fill="x", padx=10)
+    url_count_label = ttk.Label(dl_tab, text="URLs: 0")
+    url_count_label.pack(anchor="w", padx=10, pady=(0, 5))
 
     folder_frame = ttk.Frame(dl_tab)
     folder_frame.pack(fill="x", padx=10, pady=(5, 5))
@@ -117,6 +153,10 @@ def start_gui():
     artist_bar.pack(fill="x", padx=10, pady=(2, 2))
     file_bar = ttk.Progressbar(dl_tab, mode="determinate")
     file_bar.pack(fill="x", padx=10)
+
+    # Preview label for image/video preview
+    preview_label = ttk.Label(dl_tab)
+    preview_label.pack(anchor="center", pady=(5, 5))
 
     ttk.Label(dl_tab, text="Download Log:").pack(anchor="w", padx=10, pady=(10, 2))
     log_box = tk.Text(dl_tab, height=10, bg="#2e2e2e", fg="lightgray", insertbackground="white")
@@ -131,7 +171,36 @@ def start_gui():
         os.makedirs(out, exist_ok=True)
         log_box.delete("1.0", tk.END)
 
+        def update_preview(path):
+            try:
+                # Clear text if previously set
+                preview_label.config(text="")
+                if path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+                    img = Image.open(path)
+                    img.thumbnail((200, 200))
+                    preview_img = ImageTk.PhotoImage(img)
+                    preview_label.config(image=preview_img)
+                    preview_label.image = preview_img
+                elif cv2 and path.lower().endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')):
+                    cap = cv2.VideoCapture(path)
+                    success, frame = cap.read()
+                    if success:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        img = Image.fromarray(frame)
+                        img.thumbnail((200, 200))
+                        preview_img = ImageTk.PhotoImage(img)
+                        preview_label.config(image=preview_img)
+                        preview_label.image = preview_img
+                    else:
+                        preview_label.config(image='', text='[No Preview]')
+                    cap.release()
+                else:
+                    preview_label.config(image='', text='[No Preview]')
+            except Exception as e:
+                preview_label.config(image='', text='[Preview Error]')
+
         def worker():
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             for url in urls:
                 try:
                     domain, service, cid = extract_domain_service_id(url)
@@ -149,9 +218,55 @@ def start_gui():
                     artist_bar["maximum"] = len(files)
                     log_box.insert(tk.END, f"== {creator} ({len(files)} files) ==\n")
 
-                    for i, file_url in enumerate(files):
-                        download_file(file_url, save_dir, file_status, artist_bar, file_bar, log_box)
-                        artist_bar["value"] += 1
+                    def task(url):
+                        # call download_file with preview update after download
+                        file_path = None
+                        try:
+                            file_name = os.path.basename(urlparse(url).path)
+                            subfolder = get_file_type_folder(file_name)
+                            if subfolder is None:
+                                log_box.insert(tk.END, f"[SKIP] {file_name} (unsupported type)\n")
+                                return None
+                            target_folder = os.path.join(save_dir, subfolder)
+                            os.makedirs(target_folder, exist_ok=True)
+                            path = os.path.join(target_folder, file_name)
+                            file_path = path
+                            if os.path.exists(path):
+                                log_box.insert(tk.END, f"[SKIP] {file_name}\n")
+                                return path
+                            headers = {"User-Agent": "Mozilla/5.0"}
+                            r = requests.get(url, stream=True, headers=headers)
+                            total = int(r.headers.get("content-length", 0))
+                            downloaded = 0
+
+                            def update_progress(value):
+                                file_bar["value"] = value
+                            with open(path, 'wb') as f:
+                                for chunk in r.iter_content(8192):
+                                    f.write(chunk)
+                                    downloaded += len(chunk)
+                                    if total:
+                                        percent = int(downloaded * 100 / total)
+                                        root.after_idle(update_progress, percent)
+                            log_box.insert(tk.END, f"[OK] {file_name}\n")
+                            # After download, reset file_bar using after_idle in main thread
+                            root.after_idle(lambda: file_bar.config(value=0))
+                            return path
+                        except Exception as e:
+                            log_box.insert(tk.END, f"[ERROR] {os.path.basename(urlparse(url).path)} — {e}\n")
+                            return None
+
+                    # Use the value from the settings tab for max_workers
+                    with ThreadPoolExecutor(max_workers=worker_count.get()) as executor:
+                        futures = [executor.submit(task, file_url) for file_url in files]
+                        for i, future in enumerate(as_completed(futures)):
+                            result_path = future.result()
+                            # Update artist_bar in main thread using after_idle
+                            root.after_idle(lambda i=i: artist_bar.config(value=i + 1))
+                            # Only update preview if file was successfully downloaded or exists
+                            if result_path and os.path.exists(result_path):
+                                # Use after_idle to update preview in main thread
+                                root.after_idle(update_preview, result_path)
 
                 except Exception as e:
                     log_box.insert(tk.END, f"[ERROR] {url} — {e}\n")
@@ -164,6 +279,9 @@ def start_gui():
 
     browse_tab = ttk.Frame(notebook)
     notebook.add(browse_tab, text="Browse")
+
+    # Set the active tab to the Download tab on startup
+    notebook.select(dl_tab)
 
     search_mode = tk.StringVar(value="kemono")
     search_entry = tk.StringVar()
@@ -187,8 +305,12 @@ def start_gui():
     search_frame.pack(padx=10, pady=(0, 10), fill="x")
     search_entry_box = ttk.Entry(search_frame, textvariable=search_entry, width=40)
     search_entry_box.pack(side="left", fill="x", expand=True)
-    search_entry_box.bind("<Return>", lambda e: search_artists(search_entry.get(), search_mode.get()))
-    ttk.Button(search_frame, text="Search", command=lambda: search_artists(search_entry.get(), search_mode.get())).pack(side="left", padx=5)
+    search_entry_box.bind("<Return>", lambda e: threading.Thread(target=lambda: search_artists(search_entry.get(), search_mode.get())).start())
+    ttk.Button(
+        search_frame,
+        text="Search",
+        command=lambda: threading.Thread(target=lambda: search_artists(search_entry.get(), search_mode.get())).start()
+    ).pack(side="left", padx=5)
 
     results_canvas = tk.Canvas(browse_tab, bg="#2e2e2e", highlightthickness=0)
     results_scrollbar = ttk.Scrollbar(browse_tab, orient="vertical", command=results_canvas.yview)
@@ -215,10 +337,17 @@ def start_gui():
             if var.get():
                 url = f"https://{domain}/{service}/user/{uid}"
                 new_urls.add(url)
-        final_urls = (existing_urls - {f"https://kemono.su/{s}/{u}" for _, s, u in selected_artists.values() if not selected_artists[f"{s}_{u}"][0].get()}) | new_urls
+        # Fix unchecked URLs domain logic
+        unchecked_urls = {
+            f"https://{domain}/{s}/user/{u}"
+            for display, (var, s, u) in selected_artists.items()
+            if not var.get()
+        }
+        final_urls = (existing_urls - unchecked_urls) | new_urls
         url_box.delete("1.0", tk.END)
         for url in sorted(final_urls):
             url_box.insert(tk.END, url + "\n")
+        url_count_label.config(text=f"URLs: {len(final_urls)}")
 
     def on_checkbutton_toggle():
         update_url_box()
@@ -228,34 +357,24 @@ def start_gui():
             widget.destroy()
         selected_artists.clear()
         artist_lookup.clear()
-        if not term.strip():
-            return
+        term = term.strip().lower()
         log_box.insert(tk.END, f"Searching '{term}' on {mode}...\n")
         selected_mode = search_mode.get()
         selected_platform = search_platform.get().lower()
-        if selected_platform == "any":
-            platforms_to_search = COOMER_PLATFORMS if selected_mode == "coomer" else KEMONO_PLATFORMS
-        else:
-            platforms_to_search = [selected_platform]
-        all_creators = []
-        for plat in platforms_to_search:
-            try:
-                resp = requests.get(f"https://{selected_mode}.su/api/v1/{plat}/creators")
-                resp.raise_for_status()
-                plat_artists = resp.json()
-                for artist in plat_artists:
-                    artist = dict(artist)
-                    artist["service"] = plat
-                    all_creators.append(artist)
-            except Exception as e:
-                label = tk.Label(results_frame, text=f"[ERROR] {plat} — {e}", background="#2e2e2e", foreground="red")
-                label.pack(anchor="w", padx=5, pady=2)
+        try:
+            resp = requests.get(f"https://{selected_mode}.su/api/v1/creators.txt")
+            resp.raise_for_status()
+            all_creators = resp.json()
+        except Exception as e:
+            label = tk.Label(results_frame, text=f"[ERROR] Failed to fetch creators.txt — {e}", background="#2e2e2e", foreground="red")
+            label.pack(anchor="w", padx=5, pady=2)
+            return
 
         filtered = []
         for artist in all_creators:
             if selected_platform != "any" and artist["service"] != selected_platform:
                 continue
-            if term.lower() in artist.get("name", "").lower():
+            if not term or term in artist.get("name", "").lower():
                 filtered.append(artist)
 
         filtered.sort(key=lambda a: a.get("favorited", 0), reverse=True)
@@ -277,8 +396,6 @@ def start_gui():
     footer = ttk.Frame(root, padding=5)
     footer.pack(side="bottom", fill="x")
 
-    from PIL import Image, ImageTk
-    import io
 
     github_base64 = (
         "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAAsTAAALEwEAmpwYAAAFfUlEQVR4nO2Z20sjVxzHR0tLu/QG7fZp2z9ACoVOHDNJdJI4mcxkotgWr9UnFQQv9cFL8RbxwY24also26UPImjFiu2DVBHRBx/ESx+sbkFQtGIsqHW90EQTSU75HXZCms3EyWXcF7/wgzAz0e/n/H5zzvmdEMSd7nSnhJWfn/9KdnY2bTabW8xm84TJZPrTZDI9MxqNPgiGYZ5lZWU9zczMnDAYDC16vV5LEEQq8bLFcdyHFovFybKsKzs7G0GYzWYcJpMJGY1GHAzD4MjKykKZmZk49Hr9vsFgeEhR1INbN87z/H2O456wLOu1WCyIZVkUK4DBYMCh1+u9NE0/Zhjm/Vsxz3FcicViOeE4DoH5JAAgnU4H8Q9N00WqGSdJ8lWe53+0Wq0IzKsAgGiahvgB/ldSzdvt9ntWq3WK53l0CwBIq9X+RpLkvWSOPDZ/iwCIoqjZtLS01xIGgLIRBAGbhwDjklkIMJ8IgE6nQxkZGThCAZ5fe5yo+S/BfCgAjHhPTw+amZlB/f39KDc3F5sF0xKAZD7UeDgAGBUEAfX29qKpqSnU1taGjYcBII1GUxiX+by8vPcEQTgOBwCD29vbSNLl5SUaGRnBpSUZLioqQpWVlai+vh5HRUUFKigoCJYLZGx0dBR5vd7g31lbW4OyeQEgPT39hCTJ2KdYURSf2Gw2FA4A4ff7UbgODw/R+vo6BpKTx+PBRo+Pj1+4d3V1FREArlEU9X1M5nmef2Cz2byRAHJycpBaouQBvCRJfhTL6DtFUUSRAOAljjbK8er8/BzKRQ4A3oWHisw7HI5UURT35QDgHdjY2Eg6wPLycrQMAIALNo03AtjtdhrMRwKA0W9tbUWBQCDpAIFAANXV1WHzkQAgOyRJUkrKp0UOAKbQ/f19pJb29vaw6SgAXyvJwC+RAGCabG5uRmqruro6aD4cQKPRjCvJwNNIAFA+Y2NjqgMMDQ1hwzIA60oycBIJAMpnYWFBdYDZ2VlsVgbgWEkGvJEAYPVcWVlRHWBxcTEawJUSALdcBubn51UHmJ6ejgbwr5IS+kvuHRgfH1cdYHh4WPYdIElyVwnA73KzUGdnp+oAjY2N0WahZSUA43LrAGyd3W63aubdbjde6aOsA2NKAOqiLWSQYrU0ODgYdSHTaDTVNwKIoviJHIDUTsK2Odna3NwMNjpRAD6OazMnmZf2Q1BKS0tLSd3IcRwXsSMLAdgjCCKFUCKbzdYqAYBp6LBqamqCTTwE1KrD4UBbW1txG9/Z2UEdHR1B4xF64lCAm/dBoSdvoiheAgCM/MDAAO7CoHRqa2vxoiY199D7lpSU4GcmJyfR6emprGG4B89AL11YWIiNSicS4acSYQBXNE1/QMQiURS/k0oIRryhoSHYEpaWlv4vGwACjTxch9ZQTj6fD5WVleHe+KZjlYwQgPT09G9iMv88C28LguAKXcicTic6OjrCWwooMciEBACZgFX0Js3NzWGzMQD8TZLkO0Q8EgThi0j9wMHBAYaA+i0uLsbR1dWFLi4ubgQ4OzvDBmMAyIvLfEgmHoV2ZO3t7bh7glhdXUW7u7vI5XLhXaQSwfeUAlAU5SSSoBRBEH6SemIol+7u7oRWZIUAPyftR5D8/Pw3eJ6fkNYDgIDPTU1NqK+vD5+uQbemtFdWADDOMMzrRJKVYrVaO0MPd0PPReHYMBkAWq32W1V/frJarZ9zHOcKP51OAsC+Vqv9jLgN5ebmvsVxXD/LsleJAuh0ukudTveIYZg3idsWwzDvsiz7ldls3q2qqkJKVV5eDuVyoNfrOw0Gw33iZQshlHp0dPTp6elpg8fj+dXn861fX18f+P1+DwR89vl8f8A9eAaehe8Qd7rTnYhE9R+kV7M+FoRFRQAAAABJRU5ErkJggg=="
